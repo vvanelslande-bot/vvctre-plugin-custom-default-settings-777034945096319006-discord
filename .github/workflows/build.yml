@@ -1,0 +1,74 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      mention:
+        required: true
+      code_file_name:
+        required: true
+
+jobs:
+  make_plugin:
+    runs-on: ${{matrix.os}}
+    strategy:
+      matrix:
+        os: [windows-2019, ubuntu-18.04]
+    steps:
+      - uses: actions/checkout@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cl.exe //LD //Fe:${{github.event.repository.name}}.dll ${{github.event.inputs.code_file_name}}
+          else
+            gcc ${{github.event.inputs.code_file_name}} -shared -o ${{github.event.repository.name}}.so
+          fi
+      - name: Prepare to upload artifact
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          mkdir zip
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cp ${{github.event.repository.name}}.dll zip/
+          else
+            cp ${{github.event.repository.name}}.so zip/
+          fi
+          cp ${{github.event.inputs.code_file_name}} zip/
+          cp license.txt zip/
+      - name: Upload artifact
+        uses: actions/upload-artifact@v1
+        with:
+          name: ${{github.event.repository.name}}-${{runner.os}}
+          path: zip
+  success:
+    needs: make_plugin
+    runs-on: ubuntu-18.04
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/download-artifact@v2
+      - name: Create 7z files
+        run: |
+          cd ${{github.event.repository.name}}-Windows
+          7z a ${{github.event.repository.name}}-windows.7z ${{github.event.repository.name}}.dll license.txt
+
+          cd ../${{github.event.repository.name}}-Linux
+          7z a ${{github.event.repository.name}}-linux.7z ${{github.event.repository.name}}.so license.txt
+      - run: |
+          curl \
+            -F "payload_json={\"content\":\"${{github.event.inputs.mention}}\nThe first attachment is for Windows\nThe second attachment is for Linux\nRepository: <${{github.event.repository.html_url}}>\"}" \
+            -F "windows=@${{github.event.repository.name}}-Windows/${{github.event.repository.name}}-windows.7z" \
+            -F "linux=@${{github.event.repository.name}}-Linux/${{github.event.repository.name}}-linux.7z" \
+            ${{secrets.DISCORD_WEBHOOK}}
+  failure:
+    if: failure()
+    runs-on: ubuntu-18.04
+    needs: make_plugin
+    steps:
+      - run: |
+          curl \
+            -H "Content-Type: application/json" \
+            --data "{\"content\":\"${{github.event.inputs.mention}}, a error occurred when making your plugin\nRepository: <${{github.event.repository.html_url}}>\"}" \
+            ${{secrets.DISCORD_WEBHOOK}}
